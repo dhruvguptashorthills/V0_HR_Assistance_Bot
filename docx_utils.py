@@ -133,53 +133,93 @@ class DocxUtils:
 
     @staticmethod
     def add_background_watermark(doc, bg_image_path="templates/bg.png"):
-        """Add background watermark with 17% opacity using the specified image"""
+        """Add background image with transparency positioned behind content"""
         try:
-            section = doc.sections[0]
-            header = section.header
+            # Add a paragraph at the very beginning of the document for the background
+            first_para = doc.paragraphs[0]
             
-            watermark_para = header.add_paragraph()
-            watermark_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            watermark_para.paragraph_format.space_before = Pt(0)
-            watermark_para.paragraph_format.space_after = Pt(0)
+            # Insert a new paragraph at the beginning
+            new_para = doc.add_paragraph()
+            doc._body._body.insert(0, new_para._element)
             
-            try:
-                run = watermark_para.add_run()
-                picture = run.add_picture(bg_image_path, width=Inches(2.8))  # 35% of page width
+            # Configure the background paragraph
+            new_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            new_para.paragraph_format.space_before = Pt(0)
+            new_para.paragraph_format.space_after = Pt(0)
+            
+            # Add the image
+            run = new_para.add_run()
+            picture = run.add_picture(bg_image_path, width=Inches(4.0))
+            
+            # Get the drawing element and set it behind text
+            drawing_elements = run._element.xpath('.//wp:anchor | .//wp:inline')
+            if drawing_elements:
+                drawing = drawing_elements[0]
                 
-                drawing_elements = run._element.xpath('.//wp:anchor | .//wp:inline')
-                if drawing_elements:
-                    drawing = drawing_elements[0]
-                    pic_elements = drawing.xpath('.//pic:pic')
-                    if pic_elements:
-                        pic = pic_elements[0]
-                        blip_elements = pic.xpath('.//a:blipFill')
-                        if blip_elements:
-                            blipFill = blip_elements[0]
-                            
-                            alphaModFix = OxmlElement('a:alphaModFix')
-                            alphaModFix.set('amt', '17000')  # 17% opacity
-                            
-                            effectLst = blipFill.find('.//a:effectLst')
-                            if effectLst is None:
-                                effectLst = OxmlElement('a:effectLst')
-                                blipFill.append(effectLst)
-                            
-                            effectLst.append(alphaModFix)
-                            
-                            # Position behind text
-                            drawing.set('relativeHeight', '0')
-                            wrap = OxmlElement('wp:wrapNone')
-                            drawing.append(wrap)
+                # Convert inline to anchor for positioning
+                if drawing.tag.endswith('inline'):
+                    # Create anchor element
+                    anchor = OxmlElement('wp:anchor')
+                    anchor.set('distT', '0')
+                    anchor.set('distB', '0')
+                    anchor.set('distL', '0')
+                    anchor.set('distR', '0')
+                    anchor.set('simplePos', '0')
+                    anchor.set('relativeHeight', '0')
+                    anchor.set('behindDoc', '1')
+                    anchor.set('locked', '0')
+                    anchor.set('layoutInCell', '1')
+                    anchor.set('allowOverlap', '1')
+                    
+                    # Copy child elements from inline to anchor
+                    for child in drawing:
+                        anchor.append(child)
+                    
+                    # Replace inline with anchor
+                    drawing.getparent().replace(drawing, anchor)
+                    drawing = anchor
                 
-            except Exception as e:
-                print(f"Could not add watermark image: {e}")
+                # Set positioning to center of page
+                positionH = OxmlElement('wp:positionH')
+                positionH.set('relativeFrom', 'page')
+                posOffset = OxmlElement('wp:posOffset')
+                posOffset.text = '2160000'  # Center horizontally (3 inches from left)
+                positionH.append(posOffset)
+                drawing.append(positionH)
+                
+                positionV = OxmlElement('wp:positionV')
+                positionV.set('relativeFrom', 'page')
+                posOffset = OxmlElement('wp:posOffset')
+                posOffset.text = '3600000'  # Center vertically (5 inches from top)
+                positionV.append(posOffset)
+                drawing.append(positionV)
+                
+                # Set wrapping to none (behind text)
+                wrapNone = OxmlElement('wp:wrapNone')
+                drawing.append(wrapNone)
+                
+                # Add transparency
+                pic_elements = drawing.xpath('.//pic:pic')
+                if pic_elements:
+                    pic = pic_elements[0]
+                    blipFill = pic.find('.//a:blipFill')
+                    if blipFill is not None:
+                        # Add alpha modification for transparency
+                        alphaModFix = OxmlElement('a:alphaModFix')
+                        alphaModFix.set('amt', '15000')  # 15% opacity
+                        
+                        # Find or create effect list
+                        effectLst = blipFill.find('.//a:effectLst')
+                        if effectLst is None:
+                            effectLst = OxmlElement('a:effectLst')
+                            blipFill.append(effectLst)
+                        
+                        effectLst.append(alphaModFix)
             
             return True
         except Exception as e:
-            print(f"Could not add watermark background: {e}")
+            print(f"Could not add background image: {e}")
             return False
-
     @staticmethod
     def add_robust_page_border(doc):
         """Add page border with enhanced compatibility for Word web/desktop and PDF export"""
@@ -508,7 +548,16 @@ class DocxUtils:
 
         DocxUtils.add_robust_page_border(doc)
         
+        # Add the main table first
+        main_table = DocxUtils.create_compatible_table(doc, rows=1, cols=2, width_inches=8.1)
+        DocxUtils.set_fixed_column_widths(main_table, 2.8, 5.3)
+        DocxUtils.ensure_table_column_borders(main_table, 0, 'CCCCCC')
+
+        # NOW add the background image
         DocxUtils.add_background_watermark(doc, bg_image_path="templates/bg.png")
+
+        # Continue with the rest of the content...
+        left_cell = main_table.cell(0, 0)
 
         header = doc.sections[0].header
         header.is_linked_to_previous = False
@@ -854,6 +903,12 @@ class DocxUtils:
         header_table.columns[1].width = Inches(2.7)
         header_table.columns[2].width = Inches(2.7)
         
+                # After header setup and before content
+        DocxUtils.add_background_watermark(doc, bg_image_path="templates/bg.png")
+
+        # Then continue with content creation
+        content_padding = doc.add_paragraph()
+
         left_cell = header_table.cell(0, 0)
         left_para = left_cell.paragraphs[0]
         left_para.alignment = WD_ALIGN_PARAGRAPH.LEFT

@@ -503,7 +503,6 @@ class DocxUtils:
             section.right_margin = Inches(0.2)
             section.header_distance = Inches(0.15)
             section.footer_distance = Inches(0.15)
-            
             section.page_width = Inches(8.5)
             section.page_height = Inches(11)
 
@@ -839,7 +838,7 @@ class DocxUtils:
             section.right_margin = Inches(0.2)
 
             section.header_distance = Inches(0.15)
-            section.footer_distance = Inches(0mid-15)
+            section.footer_distance = Inches(0.15)
 
         DocxUtils.add_robust_page_border(doc)
         

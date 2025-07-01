@@ -495,7 +495,7 @@ class DocxUtils:
         
         doc = docx.Document()
         
-        sectionsozilla = doc.sections
+        sections = doc.sections
         for section in sections:
             section.top_margin = Inches(0.2)
             section.bottom_margin = Inches(0.2)

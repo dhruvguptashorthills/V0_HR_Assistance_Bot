@@ -597,7 +597,7 @@ class DocxUtils:
             DocxUtils.add_word_font_optimization(skills_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
             
             for skill in data_copy['skills']:
-                skill26skill_parts = DocxUtils.clean_html_text(skill)
+                skill_parts = DocxUtils.clean_html_text(skill)
                 skill_para = left_cell.add_paragraph()
                 DocxUtils.add_word_optimized_spacing(skill_para, space_after=3)
                 skill_para.paragraph_format.left_indent = Pt(28)

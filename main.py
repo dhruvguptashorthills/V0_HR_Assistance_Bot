@@ -8,7 +8,6 @@ from datetime import datetime
 import copy
 from pdf_utils import PDFUtils  # Import the new class
 from docx_utils import DocxUtils # Import the DocxUtils class
-# Import your existing modules
 from openai import AzureOpenAI
 from llama_resume_parser import ResumeParser
 from standardizer import ResumeStandardizer

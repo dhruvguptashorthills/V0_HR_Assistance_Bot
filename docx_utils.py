@@ -501,7 +501,7 @@ class DocxUtils:
             section.bottom_margin = Inches(0.2)
             section.left_margin = Inches(0.2)
             section.right_margin = Inches(0.2)
- locais            section.header_distance = Inches(0.15)
+            section.header_distance = Inches(0.15)
             section.footer_distance = Inches(0.15)
             
             section.page_width = Inches(8.5)

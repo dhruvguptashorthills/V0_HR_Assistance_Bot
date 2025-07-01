@@ -440,67 +440,37 @@ class DocxUtils:
             print(f"Could not optimize for PDF export: {e}")
 
     @staticmethod
-    def add_background_image(doc, bg_image_path="templates/bg.png", opacity=0.17):
-        """Add a full-page background image with specified opacity for Word and PDF compatibility"""
+    def add_background_image_vml(doc, bg_image_path="templates/bg.png", opacity=0.17):
+        """Add background image using VML for compatibility with older Word versions"""
         try:
-            section = doc.sections[0]
-            header = section.header
-            
-            # Create a paragraph in the header for the background image
-            bg_para = header.add_paragraph()
-            bg_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            bg_para.paragraph_format.space_before = Pt(0)
-            bg_para.paragraph_format.space_after = Pt(0)
-            
-            # Calculate image size to cover the entire page (8.5" x 11" for US Letter)
-            page_width = section.page_width.inches
-            page_height = section.page_height.inches
-            
-            try:
-                run = bg_para.add_run()
-                # Add the image, scaling it to page size
-                picture = run.add_picture(bg_image_path, width=Inches(page_width))
-                
-                # Adjust image height to maintain aspect ratio or fill page
-                # Note: Word may stretch the image slightly; we prioritize width to avoid gaps
-                picture.height = Inches(page_height)
-                
-                # Set image to be behind text
-                anchor = run._element.xpath('.//wp:anchor')[0]
-                anchor.set('relativeHeight', '0')  # Lowest z-order (behind text)
-                anchor.set('behindDoc', '1')  # Explicitly place behind document content
-                
-                # Set position to top-left of page
-                anchor.xpath('.//wp:positionH')[0].set('relativeFrom', 'page')
-                anchor.xpath('.//wp:positionV')[0].set('relativeFrom', 'page')
-                
-                # Apply opacity (17% as per original template)
-                blip_elements = anchor.xpath('.//a:blip')
-                if blip_elements:
-                    blip = blip_elements[0]
-                    
-                    # Create effect list if it doesn't exist
-                    effect_lst = blip.xpath('.//a:effectLst')
-                    if not effect_lst:
-                        effect_lst = OxmlElement('a:effectLst')
-                        blip.append(effect_lst)
-                    else:
-                        effect_lst = effect_lst[0]
-                    
-                    # Add alpha modulation for opacity (17% = 17000/100000)
-                    alpha_mod_fix = OxmlElement('a:alphaModFix')
-                    alpha_mod_fix.set('amt', str(int(opacity * 100000)))  # Convert opacity to Word's scale
-                    effect_lst.append(alpha_mod_fix)
-                    
-            except Exception as e:
-                print(f"Could not add background image: {e}")
+            if not os.path.exists(bg_image_path):
+                print(f"Error: Background image file not found at {bg_image_path}")
                 return False
+
+            section = doc.sections[0]
+            sect_pr = section._sectPr
             
+            # Add VML background
+            vml_background = OxmlElement('w:background')
+            vml_background.set(qn('w:color'), 'FFFFFF')  # White background as fallback
+            
+            vml_shape = OxmlElement('v:background')
+            vml_shape.set('id', '_x0000_s1024')
+            
+            vml_fill = OxmlElement('v:fill')
+            vml_fill.set('type', 'tile')
+            vml_fill.set('src', bg_image_path)
+            vml_fill.set('opacity', str(opacity))
+            
+            vml_shape.append(vml_fill)
+            vml_background.append(vml_shape)
+            sect_pr.append(vml_background)
+            
+            print("VML background image added successfully")
             return True
         except Exception as e:
-            print(f"Could not add background image: {e}")
-            return False
-    # Keep old method names for backward compatibility but use new implementations
+            print(f"Error in add_background_image_vml: {e}")
+            return False    # Keep old method names for backward compatibility but use new implementations
     @staticmethod
     def add_grey_background(cell):
         """Add grey background to cell - compatibility wrapper"""
@@ -574,7 +544,8 @@ class DocxUtils:
         # Skip watermark for now as requested
         # DocxUtils.add_background_watermark(doc)
 # Add background image with opacity
-        DocxUtils.add_background_image(doc, bg_image_path="templates/bg.png", opacity=0.17)
+# Add background image with VML fallback
+        DocxUtils.add_background_image_vml(doc, bg_image_path="templates/bg.png", opacity=0.17)
         # --- HEADER WITH LOGOS (Compatible design) ---
         header = doc.sections[0].header
         header.is_linked_to_previous = False
@@ -975,8 +946,8 @@ class DocxUtils:
         # Skip watermark as requested
         # DocxUtils.add_background_watermark(doc)
 # Add background image with opacity
-        DocxUtils.add_background_image(doc, bg_image_path="templates/bg.png", opacity=0.17)
-        # Header with logos (will appear on all pages)
+        # Add background image with VML fallback
+        DocxUtils.add_background_image_vml(doc, bg_image_path="templates/bg.png", opacity=0.17)        # Header with logos (will appear on all pages)
         header = doc.sections[0].header
         
         # Clear any default header content

@@ -1,482 +1,32 @@
-import os
-from docx import Document
-from docx.oxml.ns import qn
-from docx.shared import Inches, Pt, RGBColor
+import base64
+import io
+from jinja2 import Environment, FileSystemLoader
+from weasyprint import HTML
+import fitz  # PyMuPDF
+import copy
+import re
+import docx
+from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.section import WD_SECTION
-import copy
-import re
-import io
-from docx.shared import Inches, Pt, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
-from docx.oxml import OxmlElement
+from docx.oxml.shared import qn
+from docx.enum.dml import MSO_THEME_COLOR_INDEX
 
 class DocxUtils:
     @staticmethod
-    def add_background_image(doc, bg_image_path="templates/bg.png", opacity=0.17):
-        """Add a full-page background image as the first element with specified opacity"""
-        try:
-            # Verify image file exists
-            if not os.path.exists(bg_image_path):
-                print(f"Error: Background image file not found at {bg_image_path}")
-                # Attempt VML fallback if image path is invalid
-                return DocxUtils.add_background_image_vml(doc, bg_image_path, opacity)
-
-            section = doc.sections[0]
-            header = section.header
-
-            # Clear all existing header content to ensure image is first
-            header._element.clear_content()
-            for para in header.paragraphs:
-                try:
-                    p = para._element
-                    p.getparent().remove(p)
-                except:
-                    para.clear()
-
-            # Create a new paragraph for the background image
-            bg_para = header.add_paragraph()
-            bg_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            bg_para.paragraph_format.space_before = Pt(0)
-            bg_para.paragraph_format.space_after = Pt(0)
-
-            # Get page dimensions (US Letter: 8.5" x 11")
-            page_width = section.page_width.inches
-            page_height = section.page_height.inches
-
-            try:
-                run = bg_para.add_run()
-                # Add image, scaling to page width
-                picture = run.add_picture(bg_image_path, width=Inches(page_width))
-
-                # Adjust height to cover page, maintaining aspect ratio if possible
-                img_width, img_height = picture.width, picture.height
-                if img_width > 0:
-                    aspect_ratio = img_height / img_width
-                    target_height = page_width * aspect_ratio
-                    picture.height = Inches(min(target_height, page_height))
-                    if target_height > page_height:
-                        picture.width = Inches(page_height / aspect_ratio)
-
-                # Access the drawing element
-                drawing_elements = run._element.xpath('.//wp:anchor | .//wp:inline')
-                if not drawing_elements:
-                    print("Error: No drawing element found for image, trying VML fallback")
-                    return DocxUtils.add_background_image_vml(doc, bg_image_path, opacity)
-
-                drawing = drawing_elements[0]
-
-                # Ensure image is behind all content
-                if drawing.tag.endswith('anchor'):
-                    drawing.set('behindDoc', '1')
-                    drawing.set('relativeHeight', '0')
-
-                    # Position at top-left of page
-                    position_h = drawing.xpath('.//wp:positionH')
-                    if position_h:
-                        position_h[0].set('relativeFrom', 'page')
-                        pos_h_offset = position_h[0].xpath('.//wp:posOffset')
-                        if pos_h_offset:
-                            pos_h_offset[0].text = '0'
-
-                    position_v = drawing.xpath('.//wp:positionV')
-                    if position_v:
-                        position_v[0].set('relativeFrom', 'page')
-                        pos_v_offset = position_v[0].xpath('.//wp:posOffset')
-                        if pos_v_offset:
-                            pos_v_offset[0].text = '0'
-
-                # Apply opacity
-                blip_elements = drawing.xpath('.//a:blip')
-                if blip_elements:
-                    blip = blip_elements[0]
-                    effect_lst = blip.xpath('.//a:effectLst')
-                    if not effect_lst:
-                        effect_lst = OxmlElement('a:effectLst')
-                        blip.append(effect_lst)
-                    else:
-                        effect_lst = effect_lst[0]
-
-                    # Remove existing alphaModFix
-                    for existing_alpha in effect_lst.xpath('.//a:alphaModFix'):
-                        effect_lst.remove(existing_alpha)
-
-                    # Add new alpha modulation
-                    alpha_mod_fix = OxmlElement('a:alphaModFix')
-                    alpha_mod_fix.set('amt', str(int(opacity * 100000)))
-                    effect_lst.append(alpha_mod_fix)
-                else:
-                    print("Error: No blip element found for opacity, trying VML fallback")
-                    return DocxUtils.add_background_image_vml(doc, bg_image_path, opacity)
-
-                print("Background image added successfully via primary method")
-                return True
-
-            except Exception as e:
-                print(f"Error adding background image via primary method: {e}")
-                print("Attempting VML fallback")
-                return DocxUtils.add_background_image_vml(doc, bg_image_path, opacity)
-
-        except Exception as e:
-            print(f"Critical error in add_background_image: {e}")
-            print("Attempting VML fallback as last resort")
-            return DocxUtils.add_background_image_vml(doc, bg_image_path, opacity)
-
-    @staticmethod
-    def add_background_image_vml(doc, bg_image_path="templates/bg.png", opacity=0.17):
-        """Fallback: Add background image using VML for compatibility"""
-        try:
-            if not os.path.exists(bg_image_path):
-                print(f"Error: Background image file not found at {bg_image_path} for VML")
-                return False
-
-            section = doc.sections[0]
-            sect_pr = section._sectPr
-
-            # Add VML background
-            vml_background = OxmlElement('w:background')
-            vml_background.set(qn('w:color'), 'FFFFFF')  # White fallback
-
-            vml_shape = OxmlElement('v:background')
-            vml_shape.set('id', '_x0000_s1024')
-
-            vml_fill = OxmlElement('v:fill')
-            vml_fill.set('type', 'tile')
-            vml_fill.set('src', bg_image_path)
-            vml_fill.set('opacity', str(opacity))
-
-            vml_shape.append(vml_fill)
-            vml_background.append(vml_shape)
-            sect_pr.append(vml_background)
-
-            print("Background image added successfully via VML")
-            return True
-        except Exception as e:
-            print(f"Error in add_background_image_vml: {e}")
-            return False
-
-    # Include the rest of the DocxUtils class methods here (unchanged)
-    # For brevity, only the modified methods are shown above
-    # Add the original methods like clean_na_values, generate_docx, etc., as needed
-
-    @staticmethod
-    def generate_docx(data, keywords=None, left_logo_path="templates/left_logo SMALL.png", right_logo_path="templates/right_logo_small.png"):
-        """
-        Generate a .docx resume matching the PDF template exactly.
-        Returns a BytesIO object containing the Word file.
-        """
-        # Create a new document
-        doc = Document()
-
-        # Add background image as the very first operation
-        DocxUtils.add_background_image(doc, bg_image_path="templates/bg.png", opacity=0.17)
-
-        # Set page margins with small values for compatibility
-        sections = doc.sections
-        for section in sections:
-            section.top_margin = Inches(0.2)
-            section.bottom_margin = Inches(0.2)
-            section.left_margin = Inches(0.2)
-            section.right_margin = Inches(0.2)
-            section.header_distance = Inches(0.15)
-            section.footer_distance = Inches(0.15)
-            section.page_width = Inches(8.5)
-            section.page_height = Inches(11)
-
-        # Add robust page border
-        DocxUtils.add_robust_page_border(doc)
-
-        # Create a deep copy and clean NA values
-        data_copy = copy.deepcopy(data)
-        data_copy = DocxUtils.clean_na_values(data_copy)
-        
-        # Limit skills to prevent left column overflow (max 18 skills for DOCX)
-        if data_copy.get('skills') and len(data_copy['skills']) > 18:
-            data_copy['skills'] = data_copy['skills'][:18]
-        
-        # Limit certifications to prevent overflow (max 5 certifications)
-        if data_copy.get('certifications') and len(data_copy['certifications']) > 5:
-            data_copy['certifications'] = data_copy['certifications'][:5]
-
-        # Header with logos
-        header = doc.sections[0].header
-        header.is_linked_to_previous = False
-
-        # Create header table after background image
-        header_table = DocxUtils.create_compatible_table(header, rows=1, cols=3, width_inches=8.1)
-        header_table.columns[0].width = Inches(2.7)
-        header_table.columns[1].width = Inches(2.7)
-        header_table.columns[2].width = Inches(2.7)
-
-        # Left logo
-        left_cell = header_table.cell(0, 0)
-        left_para = left_cell.paragraphs[0]
-        left_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        DocxUtils.add_word_optimized_spacing(left_para, space_before=2, space_after=0)
-        left_para.paragraph_format.left_indent = Pt(12)
-        try:
-            left_run = left_para.add_run()
-            left_run.add_picture(left_logo_path, height=Inches(0.35))
-        except Exception:
-            left_run = left_para.add_run("ShorthillsAI")
-            DocxUtils.add_word_font_optimization(left_run, 'Montserrat', 10, True, RGBColor(242, 93, 93))
-
-        # Right logo
-        right_cell = header_table.cell(0, 2)
-        right_para = right_cell.paragraphs[0]
-        right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        DocxUtils.add_word_optimized_spacing(right_para, space_before=2, space_after=0)
-        right_para.paragraph_format.right_indent = Pt(12)
-        try:
-            right_run = right_para.add_run()
-            right_run.add_picture(right_logo_path, height=Inches(0.45))
-        except Exception:
-            right_run = right_para.add_run("Microsoft Partner")
-            right_run.font.name = 'Montserrat'
-            right_run.font.size = Pt(10)
-            right_run.font.color.rgb = RGBColor(102, 102, 102)
-
-        # Main content table (rest of the method remains unchanged)
-        main_table = DocxUtils.create_compatible_table(doc, rows=1, cols=2, width_inches=8.1)
-        DocxUtils.set_fixed_column_widths(main_table, 2.8, 5.3)
-        DocxUtils.ensure_table_column_borders(main_table, 0, 'CCCCCC')
-
-        left_cell = main_table.cell(0, 0)
-        right_cell = main_table.cell(0, 1)
-        left_cell._tc.clear_content()
-        right_cell._tc.clear_content()
-
-        # Left column padding
-        left_cell_padding = left_cell.add_paragraph()
-        left_cell_padding.paragraph_format.left_indent = Pt(12)
-
-        # Name and Title
-        name_title_table = DocxUtils.create_compatible_table(left_cell, rows=2, cols=1, width_inches=2.8)
-        name_title_table.columns[0].width = Inches(2.8)
-
-        name_cell = name_title_table.cell(0, 0)
-        DocxUtils.add_grey_background(name_cell)
-        name_para = name_cell.paragraphs[0]
-        DocxUtils.add_word_optimized_spacing(name_para, space_before=0, space_after=2)
-        name_para.paragraph_format.left_indent = Pt(8)
-        name_run = name_para.add_run(data_copy.get('name', ''))
-        DocxUtils.add_word_font_optimization(name_run, 'Montserrat', 17, True, RGBColor(242, 93, 93))
-
-        title_cell = name_title_table.cell(1, 0)
-        DocxUtils.add_grey_background(title_cell)
-        title_para = title_cell.paragraphs[0]
-        DocxUtils.add_word_optimized_spacing(title_para, space_after=10)
-        title_para.paragraph_format.left_indent = Pt(8)
-        title_parts = DocxUtils.clean_html_text(data_copy.get('title', ''))
-        for text, is_bold in title_parts:
-            if text.strip():
-                title_run = title_para.add_run(text)
-                DocxUtils.add_word_font_optimization(title_run, 'Montserrat', 13, True, RGBColor(34, 34, 34))
-
-        # Skills Section
-        if data_copy.get('skills'):
-            skills_para = left_cell.add_paragraph()
-            DocxUtils.add_word_optimized_spacing(skills_para, space_before=10, space_after=2)
-            skills_para.paragraph_format.left_indent = Pt(12)
-            skills_run = skills_para.add_run('SKILLS')
-            DocxUtils.add_word_font_optimization(skills_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
-            
-            for skill in data_copy['skills']:
-                skill_parts = DocxUtils.clean_html_text(skill)
-                skill_para = left_cell.add_paragraph()
-                DocxUtils.add_word_optimized_spacing(skill_para, space_after=3)
-                skill_para.paragraph_format.left_indent = Pt(28)
-                arrow_run = skill_para.add_run("▶ ")
-                DocxUtils.add_word_font_optimization(arrow_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
-                for text, is_bold in skill_parts:
-                    if text.strip():
-                        skill_run = skill_para.add_run(text)
-                        DocxUtils.add_word_font_optimization(skill_run, 'Montserrat', 10, is_bold, RGBColor(34, 34, 34))
-
-        # Education Section
-        if data_copy.get('education'):
-            edu_para = left_cell.add_paragraph()
-            DocxUtils.add_word_optimized_spacing(edu_para, space_before=10, space_after=2)
-            edu_para.paragraph_format.left_indent = Pt(12)
-            edu_run = edu_para.add_run('EDUCATION')
-            DocxUtils.add_word_font_optimization(edu_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
-            
-            for edu in data_copy['education']:
-                if isinstance(edu, dict):
-                    para = left_cell.add_paragraph()
-                    DocxUtils.add_word_optimized_spacing(para, space_after=3)
-                    para.paragraph_format.left_indent = Pt(28)
-                    arrow_run = para.add_run("▶ ")
-                    DocxUtils.add_word_font_optimization(arrow_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
-                    if edu.get('degree'):
-                        degree_parts = DocxUtils.clean_html_text(edu['degree'])
-                        for text, is_bold in degree_parts:
-                            if text.strip():
-                                degree_run = para.add_run(text)
-                                DocxUtils.add_word_font_optimization(degree_run, 'Montserrat', 10, is_bold, RGBColor(34, 34, 34))
-                    if edu.get('institution'):
-                        para.add_run('\n')
-                        inst_parts = DocxUtils.clean_html_text(edu['institution'])
-                        for text, is_bold in inst_parts:
-                            if text.strip():
-                                inst_run = para.add_run(text)
-                                DocxUtils.add_word_font_optimization(inst_run, 'Montserrat', 10, True, RGBColor(34, 34, 34))
-
-        # Certifications Section
-        if data_copy.get('certifications'):
-            cert_para = left_cell.add_paragraph()
-            DocxUtils.add_word_optimized_spacing(cert_para, space_before=10, space_after=2)
-            cert_para.paragraph_format.left_indent = Pt(12)
-            cert_run = cert_para.add_run('CERTIFICATIONS')
-            DocxUtils.add_word_font_optimization(cert_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
-            
-            for cert in data_copy['certifications']:
-                para = left_cell.add_paragraph()
-                DocxUtils.add_word_optimized_spacing(para, space_after=3)
-                para.paragraph_format.left_indent = Pt(28)
-                arrow_run = para.add_run("▶ ")
-                DocxUtils.add_word_font_optimization(arrow_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
-                if isinstance(cert, dict):
-                    has_content = False
-                    if cert.get('title'):
-                        title_parts = DocxUtils.clean_html_text(cert['title'])
-                        for text, is_bold in title_parts:
-                            if text.strip():
-                                title_run = para.add_run(text)
-                                DocxUtils.add_word_font_optimization(title_run, 'Montserrat', 10, is_bold, RGBColor(34, 34, 34))
-                                has_content = True
-                    if cert.get('issuer') and has_content:
-                        para.add_run('\n')
-                        issuer_parts = DocxUtils.clean_html_text(cert['issuer'])
-                        for text, is_bold in issuer_parts:
-                            if text.strip():
-                                issuer_run = para.add_run(text)
-                                DocxUtils.add_word_font_optimization(issuer_run, 'Montserrat', 10, True, RGBColor(34, 34, 34))
-                    elif cert.get('issuer') and not has_content:
-                        issuer_parts = DocxUtils.clean_html_text(cert['issuer'])
-                        for text, is_bold in issuer_parts:
-                            if text.strip():
-                                issuer_run = para.add_run(text)
-                                DocxUtils.add_word_font_optimization(issuer_run, 'Montserrat', 10, True, RGBColor(34, 34, 34))
-                                has_content = True
-                    if cert.get('year') and has_content:
-                        year_run = para.add_run(f"\n{cert['year']}")
-                        DocxUtils.add_word_font_optimization(year_run, 'Montserrat', 10, False, RGBColor(34, 34, 34))
-
-        # Right column
-        right_cell_padding = right_cell.add_paragraph()
-        right_cell_padding.paragraph_format.left_indent = Pt(12)
-
-        # Summary Section
-        if data_copy.get('summary'):
-            summary_title_para = right_cell.add_paragraph()
-            DocxUtils.add_word_optimized_spacing(summary_title_para, space_before=0, space_after=2)
-            summary_title_para.paragraph_format.left_indent = Pt(12)
-            summary_title_run = summary_title_para.add_run('SUMMARY')
-            DocxUtils.add_word_font_optimization(summary_title_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
-            
-            summary_para = right_cell.add_paragraph()
-            DocxUtils.add_word_optimized_spacing(summary_para, space_after=5)
-            summary_para.paragraph_format.left_indent = Pt(12)
-            summary_parts = DocxUtils.clean_html_text(data_copy['summary'])
-            for text, is_bold in summary_parts:
-                if text.strip():
-                    summary_run = summary_para.add_run(text)
-                    DocxUtils.add_word_font_optimization(summary_run, 'Montserrat', 10, is_bold, RGBColor(34, 34, 34))
-
-        # Projects Section
-        if data_copy.get('projects'):
-            spacing_para = right_cell.add_paragraph()
-            DocxUtils.add_word_optimized_spacing(spacing_para, space_after=3)
-            
-            section_para = right_cell.add_paragraph()
-            DocxUtils.add_word_optimized_spacing(section_para, space_after=2)
-            section_para.paragraph_format.left_indent = Pt(12)
-            section_run = section_para.add_run('KEY RESPONSIBILITIES:')
-            DocxUtils.add_word_font_optimization(section_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
-            
-            spacing_para2 = right_cell.add_paragraph()
-            DocxUtils.add_word_optimized_spacing(spacing_para2, space_after=1)
-            
-            for idx, project in enumerate(data_copy['projects']):
-                if project.get('title'):
-                    proj_title_para = right_cell.add_paragraph()
-                    DocxUtils.add_word_optimized_spacing(proj_title_para, space_before=6, space_after=2)
-                    proj_title_para.paragraph_format.left_indent = Pt(12)
-                    title_run = proj_title_para.add_run(f"Project {idx + 1}: ")
-                    DocxUtils.add_word_font_optimization(title_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
-                    title_parts = DocxUtils.clean_html_text(project['title'])
-                    for text, is_bold in title_parts:
-                        if text.strip():
-                            proj_run = proj_title_para.add_run(text)
-                            DocxUtils.add_word_font_optimization(proj_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
-                
-                if project.get('description'):
-                    desc_text = project['description']
-                    if isinstance(desc_text, str):
-                        desc_text = desc_text.replace('</li>', '</li>\n').replace('•', '\n')
-                        bullets = re.split(r'(?<=[.?!])\s+|\n|<br\s*/?>|<li>', desc_text)
-                        
-                        for bullet_html in bullets:
-                            bullet_html = bullet_html.strip()
-                            if not bullet_html:
-                                continue
-                            
-                            bullet_parts = DocxUtils.clean_html_text(bullet_html)
-                            if not any(part[0].strip() for part in bullet_parts):
-                                continue
-
-                            bullet_para = right_cell.add_paragraph()
-                            DocxUtils.add_word_optimized_spacing(bullet_para, space_after=3)
-                            bullet_para.paragraph_format.left_indent = Pt(28)
-                            arrow_run = bullet_para.add_run("▶ ")
-                            DocxUtils.add_word_font_optimization(arrow_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
-                            for text, is_bold in bullet_parts:
-                                if text.strip():
-                                    bullet_run = bullet_para.add_run(text)
-                                    DocxUtils.add_word_font_optimization(bullet_run, 'Montserrat', 10, is_bold, RGBColor(34, 34, 34))
-
-        # Footer
-        footer = doc.sections[0].footer
-        footer.is_linked_to_previous = False
-        for para in footer.paragraphs:
-            try:
-                p = para._element
-                p.getparent().remove(p)
-            except:
-                para.clear()
-            
-        footer_table = DocxUtils.create_compatible_footer_table(footer, 8.0)
-        if footer_table is not None:
-            footer_cell = footer_table.cell(0, 0)
-            DocxUtils.add_cell_background_compatible(footer_cell, 'F25D5D')
-            footer_para = footer_cell.paragraphs[0]
-            footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            DocxUtils.set_standard_spacing(footer_para, space_before_pt=6, space_after_pt=6)
-            footer_run = footer_para.add_run("© www.shorthills.ai")
-            DocxUtils.apply_standard_font(footer_run, 'Montserrat', 10, False, RGBColor(255, 255, 255))
-
-        # Apply PDF optimizations
-        DocxUtils.optimize_for_pdf_export(doc)
-        DocxUtils.lock_all_table_layouts(doc)
-
-        # Save document
-        docx_file = io.BytesIO()
-        doc.save(docx_file)
-        docx_file.seek(0)
-        return docx_file
-
-    # Include other methods from the original DocxUtils class (unchanged)
-    @staticmethod
     def clean_na_values(data):
-        """Recursively clean 'NA', 'N/A', empty strings, and None values from resume data."""
+        """
+        Recursively clean 'NA', 'N/A', empty strings, and None values from resume data.
+        Returns a cleaned copy of the data.
+        """
         if isinstance(data, dict):
             cleaned = {}
             for key, value in data.items():
                 cleaned_value = DocxUtils.clean_na_values(value)
+                # Only include the field if it has a valid value
                 if cleaned_value is not None and cleaned_value != '':
                     cleaned[key] = cleaned_value
             return cleaned
@@ -484,20 +34,34 @@ class DocxUtils:
             cleaned_list = []
             for item in data:
                 cleaned_item = DocxUtils.clean_na_values(item)
+                # Only include the item if it's not empty after cleaning
                 if cleaned_item is not None and cleaned_item != '':
-                    if isinstance(cleaned_item, dict) and cleaned_item:
+                    if isinstance(cleaned_item, dict) and cleaned_item:  # Non-empty dict
                         cleaned_list.append(cleaned_item)
-                    elif not isinstance(cleaned_item, dict):
+                    elif not isinstance(cleaned_item, dict):  # Non-dict items
                         cleaned_list.append(cleaned_item)
             return cleaned_list
         elif isinstance(data, str):
+            # Clean string values
             cleaned_str = data.strip()
+            # Filter out various "NA" representations
             na_values = {'na', 'n/a', 'not applicable', 'not available', 'none', 'null', '-', ''}
             if cleaned_str.lower() in na_values:
                 return None
             return cleaned_str
         else:
+            # Return other types as-is (numbers, booleans, etc.)
             return data
+
+    @staticmethod
+    def get_base64_image(image_path):
+        with open(image_path, "rb") as img_file:
+            return base64.b64encode(img_file.read()).decode("utf-8")
+
+    @staticmethod
+    def get_base64_pdf(pdf_file):
+        pdf_file.seek(0)
+        return base64.b64encode(pdf_file.read()).decode("utf-8")
 
     @staticmethod
     def clean_html_text(text):
@@ -507,21 +71,27 @@ class DocxUtils:
         
         text = str(text)
         bold_parts = []
+        
+        # Find all <strong> tags and their content
         strong_pattern = r'<strong>(.*?)</strong>'
         matches = list(re.finditer(strong_pattern, text, re.IGNORECASE))
         
         if matches:
             current_pos = 0
             for match in matches:
+                # Add text before bold part
                 if match.start() > current_pos:
                     bold_parts.append((text[current_pos:match.start()], False))
+                # Add bold part
                 bold_parts.append((match.group(1), True))
                 current_pos = match.end()
+            # Add remaining text
             if current_pos < len(text):
                 bold_parts.append((text[current_pos:], False))
         else:
             bold_parts = [(text, False)]
         
+        # Clean any remaining HTML tags
         cleaned_parts = []
         for part_text, is_bold in bold_parts:
             clean_text = re.sub(r'<[^>]+>', '', part_text)
@@ -543,57 +113,106 @@ class DocxUtils:
                     run.bold = True
 
     @staticmethod
+    def add_section_title(container, title, margin_top=18):
+        """Add a section title with consistent formatting matching PDF template"""
+        para = container.add_paragraph()
+        para.paragraph_format.space_before = Pt(margin_top)
+        para.paragraph_format.space_after = Pt(4)
+        run = para.add_run(title.upper())
+        run.bold = True
+        run.font.size = Pt(13)
+        run.font.color.rgb = RGBColor(242, 93, 93)  # #f25d5d
+        run.font.name = 'Montserrat'
+        return para
+
+    @staticmethod
+    def add_triangle_bullet_point(container, text_parts, indent=22):
+        """Add bullet point with triangle (▶) matching PDF template"""
+        para = container.add_paragraph()
+        para.paragraph_format.left_indent = Pt(indent)
+        para.paragraph_format.space_after = Pt(6)
+        
+        # Add red triangle
+        triangle_run = para.add_run("▶ ")
+        triangle_run.font.name = 'Montserrat'
+        triangle_run.font.size = Pt(13)
+        triangle_run.font.color.rgb = RGBColor(242, 93, 93)
+        triangle_run.bold = True
+        
+        # Add text content
+        DocxUtils.add_formatted_text(para, text_parts, font_size=12)
+        return para
+
+    @staticmethod
     def add_robust_page_border(doc):
-        """Add page border with enhanced compatibility"""
+        """Add page border with enhanced compatibility for Word web/desktop and PDF export"""
         try:
             for section in doc.sections:
-                sectPr = section._sectPr
-                pgBorders = OxmlElement('w:pgBorders')
-                pgBorders.set(qn('w:offsetFrom'), 'page')
-                pgBorders.set(qn('w:display'), 'allPages')
+                sec_pr = section._sectPr
+                # Create new borders element
+                pg_borders = OxmlElement('w:pgBorders')
+                pg_borders.set(qn('w:offsetFrom'), 'page')
                 
-                for border_name in ['top', 'left', 'bottom', 'right']:
-                    border = OxmlElement(f'w:{border_name}')
-                    border.set(qn('w:val'), 'single')
-                    border.set(qn('w:sz'), '6')
-                    border.set(qn('w:space'), '0')
-                    border.set(qn('w:color'), 'F25D5D')
-                    pgBorders.append(border)
+                # Set borders for all sides
+                for border_name in ('top', 'left', 'bottom', 'right'):
+                    border_el = OxmlElement(f'w:{border_name}')
+                    border_el.set(qn('w:val'), 'single')  # Single line border
+                    border_el.set(qn('w:sz'), '4')  # Border thickness
+                    border_el.set(qn('w:space'), '24')  # Space from page edge
+                    border_el.set(qn('w:color'), 'F25D5D')  # Resume red color (#f25d5d)
+                    pg_borders.append(border_el)
                 
-                sectPr.append(pgBorders)
+                sec_pr.append(pg_borders)
         except Exception as e:
             print(f"Could not add page border: {e}")
 
     @staticmethod
     def create_compatible_table(parent, rows, cols, width_inches=None):
-        """Create a table with enhanced compatibility"""
+        """Create a table with enhanced compatibility for Word web/desktop"""
         try:
+            # Check if parent is a header/footer (which requires width parameter)
             if hasattr(parent, '_sectPr') or 'header' in str(type(parent)).lower() or 'footer' in str(type(parent)).lower():
+                # Header/footer tables require width parameter
+                if width_inches is None:
+                    width_inches = 8.0  # Default width for headers/footers
+                table = parent.add_table(rows=rows, cols=cols, width=Inches(width_inches))
+            else:
+                # Regular document tables
+                table = parent.add_table(rows=rows, cols=cols)
+        except Exception as e:
+            # Fallback: try with width parameter
+            try:
                 if width_inches is None:
                     width_inches = 8.0
                 table = parent.add_table(rows=rows, cols=cols, width=Inches(width_inches))
-            else:
-                table = parent.add_table(rows=rows, cols=cols)
-        except Exception as e:
-            if width_inches is None:
-                width_inches = 8.0
-            table = parent.add_table(rows=rows, cols=cols, width=Inches(width_inches))
+            except:
+                # Last resort: use basic add_table without parameters
+                table = parent.add_table(rows, cols)
         
+        # Configure table properties
         try:
             table.autofit = False
             table.allow_autofit = False
+        except:
+            pass  # Some table types might not support these properties
+        
+        # Apply compatible table properties
+        try:
             tbl = table._tbl
             tblPr = tbl.tblPr
+            
+            # Use fixed layout to maintain column widths during PDF export
             tblLayout = OxmlElement('w:tblLayout')
             tblLayout.set(qn('w:type'), 'fixed')
             tblPr.append(tblLayout)
         except:
-            pass
+            pass  # Fallback gracefully
+        
         return table
 
     @staticmethod
     def add_column_border(cell, border_side='right', color='D3D3D3', width='6'):
-        """Add a border to a specific side of a table cell"""
+        """Add a border to a specific side of a table cell with fallback compatibility"""
         try:
             tcPr = cell._tc.get_or_add_tcPr()
             tcBorders = tcPr.find(qn('w:tcBorders'))
@@ -603,7 +222,7 @@ class DocxUtils:
             
             border = OxmlElement(f'w:{border_side}')
             border.set(qn('w:val'), 'single')
-            border.set(qn('w:sz'), width)
+            border.set(qn('w:sz'), width)  # Border thickness
             border.set(qn('w:space'), '0')
             border.set(qn('w:color'), color)
             tcBorders.append(border)
@@ -612,10 +231,12 @@ class DocxUtils:
 
     @staticmethod
     def remove_all_table_borders(table):
-        """Remove all table borders"""
+        """Remove all table borders for seamless layout with better compatibility"""
         try:
             tbl = table._tbl
             tblPr = tbl.tblPr
+            
+            # Remove table borders
             tblBorders = OxmlElement('w:tblBorders')
             for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
                 border = OxmlElement(f'w:{border_name}')
@@ -623,6 +244,7 @@ class DocxUtils:
                 tblBorders.append(border)
             tblPr.append(tblBorders)
             
+            # Remove cell borders
             for row in table.rows:
                 for cell in row.cells:
                     try:
@@ -635,13 +257,13 @@ class DocxUtils:
                             tcBorders.append(border)
                         tcPr.append(tcBorders)
                     except:
-                        continue
+                        continue  # Skip if border removal fails
         except Exception as e:
             print(f"Could not remove table borders: {e}")
 
     @staticmethod
     def set_standard_spacing(paragraph, space_before_pt=0, space_after_pt=0):
-        """Set paragraph spacing"""
+        """Set paragraph spacing using standard methods for better compatibility"""
         if space_before_pt > 0:
             paragraph.paragraph_format.space_before = Pt(space_before_pt)
         if space_after_pt > 0:
@@ -649,7 +271,7 @@ class DocxUtils:
 
     @staticmethod
     def apply_standard_font(run, font_name='Montserrat', font_size_pt=10, is_bold=False, color_rgb=None):
-        """Apply font formatting"""
+        """Apply font formatting using standard methods for better compatibility"""
         run.font.name = font_name
         run.font.size = Pt(font_size_pt)
         if is_bold:
@@ -659,19 +281,23 @@ class DocxUtils:
 
     @staticmethod
     def add_cell_background_compatible(cell, color_hex='F2F2F2'):
-        """Add cell background with compatibility"""
+        """Add cell background with enhanced compatibility"""
         try:
             shading_elm = OxmlElement('w:shd')
             shading_elm.set(qn('w:fill'), color_hex)
             cell._tc.get_or_add_tcPr().append(shading_elm)
             
+            # Add standard cell margins for consistent spacing
             tc_pr = cell._tc.get_or_add_tcPr()
             tc_mar = OxmlElement('w:tcMar')
+            
+            # Set margins using standard values
             for margin in ['top', 'left', 'bottom', 'right']:
                 mar_elem = OxmlElement(f'w:{margin}')
-                mar_elem.set(qn('w:w'), '144')
+                mar_elem.set(qn('w:w'), '144')  # 144 twentieths = 10pt
                 mar_elem.set(qn('w:type'), 'dxa')
                 tc_mar.append(mar_elem)
+            
             tc_pr.append(tc_mar)
             return True
         except Exception as e:
@@ -680,68 +306,90 @@ class DocxUtils:
 
     @staticmethod
     def create_compatible_footer_table(footer, width_inches=8.5):
-        """Create a footer table"""
+        """Create a footer table with enhanced compatibility"""
         try:
             footer_table = footer.add_table(rows=1, cols=1)
             footer_table.alignment = WD_TABLE_ALIGNMENT.CENTER
             footer_table.autofit = False
+            
+            # Set table width
             footer_table.columns[0].width = Inches(width_inches)
+            
+            # Remove borders for seamless appearance
             DocxUtils.remove_all_table_borders(footer_table)
+            
             return footer_table
         except Exception as e:
             print(f"Could not create footer table: {e}")
             return None
-
+    
     @staticmethod
     def ensure_table_column_borders(table, column_index=0, border_color='CCCCCC'):
-        """Ensure table has proper column borders"""
+        """Ensure table has proper column borders for clear separation"""
         try:
-            if column_index < len(table.columns) - 1:
+            if column_index < len(table.columns) - 1:  # Don't add border to last column
                 for row in table.rows:
                     cell = row.cells[column_index]
                     DocxUtils.add_column_border(cell, 'right', border_color, '8')
         except Exception as e:
             print(f"Could not add column borders: {e}")
-
+    
     @staticmethod
     def set_fixed_column_widths(table, left_width_inches, right_width_inches):
-        """Set fixed column widths"""
+        """Set fixed column widths that will be maintained during PDF export"""
         try:
+            # Set precise column widths
             table.columns[0].width = Inches(left_width_inches)
             table.columns[1].width = Inches(right_width_inches)
+            
+            # Force fixed table layout
             tbl = table._tbl
             tblPr = tbl.tblPr
+            
+            # Ensure fixed layout
             existing_layout = tblPr.find(qn('w:tblLayout'))
             if existing_layout is not None:
                 tblPr.remove(existing_layout)
+            
             tblLayout = OxmlElement('w:tblLayout')
             tblLayout.set(qn('w:type'), 'fixed')
             tblPr.append(tblLayout)
+            
+            # Set table width for consistency
             tblW = OxmlElement('w:tblW')
-            tblW.set(qn('w:w'), str(int((left_width_inches + right_width_inches) * 1440)))
+            tblW.set(qn('w:w'), str(int((left_width_inches + right_width_inches) * 1440)))  # Convert to twentieths
             tblW.set(qn('w:type'), 'dxa')
             tblPr.append(tblW)
+            
         except Exception as e:
             print(f"Could not set fixed column widths: {e}")
 
     @staticmethod
     def lock_all_table_layouts(doc):
-        """Lock all table layouts to fixed"""
+        """Lock all table layouts to fixed for consistent PDF export"""
         try:
+            # Find all tables in the document and set them to fixed layout
             for table in doc.tables:
                 try:
                     tbl = table._tbl
                     tblPr = tbl.tblPr
+                    
+                    # Remove existing layout if present
                     existing_layout = tblPr.find(qn('w:tblLayout'))
                     if existing_layout is not None:
                         tblPr.remove(existing_layout)
+                    
+                    # Set to fixed layout
                     tblLayout = OxmlElement('w:tblLayout')
                     tblLayout.set(qn('w:type'), 'fixed')
                     tblPr.append(tblLayout)
                 except:
-                    continue
+                    continue  # Skip if table cannot be processed
+            
+            # Also check header and footer tables
             for section in doc.sections:
                 try:
+                    # Header tables
                     if section.header:
                         for table in section.header.tables:
                             try:
@@ -755,6 +403,8 @@ class DocxUtils:
                                 tblPr.append(tblLayout)
                             except:
                                 continue
+                    
+                    # Footer tables
                     if section.footer:
                         for table in section.footer.tables:
                             try:
@@ -775,42 +425,868 @@ class DocxUtils:
 
     @staticmethod
     def optimize_for_pdf_export(doc):
-        """Apply optimizations for PDF export"""
+        """Apply optimizations for better PDF export from Word"""
         try:
+            # Ensure consistent font embedding and layout
             for section in doc.sections:
+                # Set print layout optimizations
                 section.different_first_page_header_footer = False
                 section.start_type = WD_SECTION.NEW_PAGE
+                
+                # Ensure consistent page setup
                 section.page_width = Inches(8.5)
                 section.page_height = Inches(11)
         except Exception as e:
             print(f"Could not optimize for PDF export: {e}")
 
     @staticmethod
+    def add_background_watermark(doc, bg_image_path="templates/bg.png"):
+        """Add background watermark matching PDF template opacity"""
+        try:
+            section = doc.sections[0]
+            header = section.header
+            
+            # Create a paragraph for the watermark
+            watermark_para = header.add_paragraph()
+            watermark_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            
+            try:
+                run = watermark_para.add_run()
+                # Add picture with size matching template (35% of page)
+                picture = run.add_picture(bg_image_path, width=Inches(2.8))
+                
+                # Access the drawing element to set transparency (17% opacity like template)
+                drawing_elements = run._element.xpath('.//wp:anchor | .//wp:inline')
+                if drawing_elements:
+                    drawing = drawing_elements[0]
+                    pic_elements = drawing.xpath('.//pic:pic')
+                    if pic_elements:
+                        pic = pic_elements[0]
+                        blip_elements = pic.xpath('.//a:blipFill')
+                        if blip_elements:
+                            blipFill = blip_elements[0]
+                            
+                            # Add alpha modulation for transparency (17% opacity)
+                            alphaModFix = OxmlElement('a:alphaModFix')
+                            alphaModFix.set('amt', '17000')  # 17% opacity (17000 out of 100000)
+                            
+                            # Find or create the effect list
+                            effectLst = blipFill.find('.//a:effectLst')
+                            if effectLst is None:
+                                effectLst = OxmlElement('a:effectLst')
+                                blipFill.append(effectLst)
+                            
+                            effectLst.append(alphaModFix)
+                
+            except Exception as e:
+                print(f"Could not add background image watermark: {e}")
+            
+            # Position the watermark behind text
+            watermark_para.paragraph_format.space_before = Pt(0)
+            watermark_para.paragraph_format.space_after = Pt(0)
+            
+            return True
+        except Exception as e:
+            print(f"Could not add watermark background: {e}")
+            return False
+
+    # Keep old method names for backward compatibility but use new implementations
+    @staticmethod
     def add_grey_background(cell):
-        """Add grey background to cell"""
+        """Add grey background to cell - compatibility wrapper"""
         return DocxUtils.add_cell_background_compatible(cell, 'F2F2F2')
 
     @staticmethod
     def remove_table_borders(table):
-        """Remove table borders"""
+        """Remove table borders - compatibility wrapper"""
         return DocxUtils.remove_all_table_borders(table)
-
+    
     @staticmethod
     def add_page_border(doc):
-        """Add page border"""
+        """Add page border - compatibility wrapper"""
         return DocxUtils.add_robust_page_border(doc)
-
+    
     @staticmethod
     def optimize_table_for_word(table):
-        """Optimize table for Word"""
+        """Optimize table for Word - compatibility wrapper"""
         return DocxUtils.remove_all_table_borders(table)
-
+    
     @staticmethod
     def add_word_optimized_spacing(paragraph, space_before=0, space_after=0, line_spacing=1.0):
-        """Add spacing"""
+        """Add spacing - compatibility wrapper"""
         return DocxUtils.set_standard_spacing(paragraph, space_before, space_after)
-
+    
     @staticmethod
     def add_word_font_optimization(run, font_name='Montserrat', font_size=10, is_bold=False, color_rgb=None):
-        """Font optimization"""
+        """Font optimization - compatibility wrapper"""
         return DocxUtils.apply_standard_font(run, font_name, font_size, is_bold, color_rgb)
+
+    @staticmethod
+    def generate_docx(data, keywords=None, left_logo_path="templates/left_logo_small.png", right_logo_path="templates/right_logo_small.png"):
+        """
+        Generate a .docx resume matching the PDF template exactly.
+        Returns a BytesIO object containing the Word file.
+        """
+
+        # Create a deep copy and clean NA values
+        data_copy = copy.deepcopy(data)
+        data_copy = DocxUtils.clean_na_values(data_copy)
+        
+        # Limit skills to prevent left column overflow (max 18 skills for DOCX)
+        if data_copy.get('skills') and len(data_copy['skills']) > 18:
+            data_copy['skills'] = data_copy['skills'][:18]
+        
+        # Limit certifications to prevent overflow (max 5 certifications)
+        if data_copy.get('certifications') and len(data_copy['certifications']) > 5:
+            data_copy['certifications'] = data_copy['certifications'][:5]
+        
+        doc = docx.Document()
+        
+        # Set page margins with small values for compatibility
+        sections = doc.sections
+        for section in sections:
+            section.top_margin = Inches(0.2)    # Small margin for compatibility
+            section.bottom_margin = Inches(0.2)
+            section.left_margin = Inches(0.2)
+            section.right_margin = Inches(0.2)
+            
+            # Set header and footer distances for better compatibility
+            section.header_distance = Inches(0.15)
+            section.footer_distance = Inches(0.15)
+            
+            # Standard-Impelmentierung der Seitengröße für bessere Kompatibilität
+            section.page_width = Inches(8.5)   # Standardbriefbreite
+            section.page_height = Inches(11)   # Standardbriefhöhe
+
+        # Robustes Seitenrand hinzufügen für bessere Kompatibilität
+        DocxUtils.add_robust_page_border(doc)
+        
+        # Wasserzeichen überspringen wie angefordert
+        # DocxUtils.add_background_watermark(doc)
+
+        # --- KOPFZEILE MIT LOGOS (Kompatibles Design) ---
+        header = doc.sections[0].header
+        header.is_linked_to_previous = False
+        
+        # Standard-Kopfzeileninhalt löschen
+        for para in header.paragraphs:
+            try:
+                p = para._element
+                p.getparent().remove(p)
+            except:
+                para.clear()  # Fallback-Methode
+        
+        # Kopfzeilentabelle mit kompatiblem Design erstellen
+        header_table = DocxUtils.create_compatible_table(header, rows=1, cols=3, width_inches=8.1)
+        
+        # Spaltenbreiten für ausgewogenes Layout festlegen (proportional zur Seite)
+        header_table.columns[0].width = Inches(2.7)
+        header_table.columns[1].width = Inches(2.7)
+        header_table.columns[2].width = Inches(2.7)
+        
+        # Linkes Logo - für Word optimiert
+        left_cell = header_table.cell(0, 0)
+        left_para = left_cell.paragraphs[0]
+        left_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        DocxUtils.add_word_optimized_spacing(left_para, space_before=2, space_after=0)
+        left_para.paragraph_format.left_indent = Pt(12)
+        try:
+            left_run = left_para.add_run()
+            left_run.add_picture(left_logo_path, height=Inches(0.35))
+        except Exception:
+            left_run = left_para.add_run("ShorthillsAI")
+            DocxUtils.add_word_font_optimization(left_run, 'Montserrat', 10, True, RGBColor(242, 93, 93))
+        
+        # Rechtes Logo - für Word optimiert
+        right_cell = header_table.cell(0, 2)
+        right_para = right_cell.paragraphs[0]
+        right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        DocxUtils.add_word_optimized_spacing(right_para, space_before=2, space_after=0)
+        right_para.paragraph_format.right_indent = Pt(12)
+        try:
+            right_run = right_para.add_run()
+            right_run.add_picture(right_logo_path, height=Inches(0.45))
+        except Exception:
+            right_run = right_para.add_run("Microsoft Partner")
+            right_run.font.name = 'Montserrat'
+            right_run.font.size = Pt(10)
+            right_run.font.color.rgb = RGBColor(102, 102, 102)
+            
+        # Abstandsparagraph nach der Kopfzeile entfernen
+        # spacing_para = doc.add_paragraph()
+        # DocxUtils.add_word_optimized_spacing(spacing_para, space_after=1)
+
+        # --- HAUPTINHALTSTABELLE (Kompatibles Zwei-Spalten-Layout) ---
+        main_table = DocxUtils.create_compatible_table(doc, rows=1, cols=2, width_inches=8.1)
+        
+        # Feste Spaltenbreiten festlegen: 35% links, 65% rechts (basierend auf 8.1" nutzbarer Breite)
+        DocxUtils.set_fixed_column_widths(main_table, 2.8, 5.3)  # 35% und 65% Aufteilung
+        
+        # Klare vertikale Trennlinie zwischen den Spalten für bessere Trennung hinzufügen
+        DocxUtils.ensure_table_column_borders(main_table, 0, 'CCCCCC')
+        
+        left_cell = main_table.cell(0, 0)
+        right_cell = main_table.cell(0, 1)
+        
+        # Standard-Absätze löschen
+        left_cell._tc.clear_content()
+        right_cell._tc.clear_content()
+
+        # Kleinere Polsterung zur linken Zelle hinzufügen
+        left_cell_padding = left_cell.add_paragraph()
+        left_cell_padding.paragraph_format.left_indent = Pt(12)
+
+        # --- LINKE SPALTE (Kompatibles Design) ---
+        # Container für Name und Titel mit grauem Hintergrund
+        name_title_table = DocxUtils.create_compatible_table(left_cell, rows=2, cols=1, width_inches=2.8)
+        name_title_table.columns[0].width = Inches(2.8)  # Passend zur Breite der linken Spalte (35%)
+        
+        # Namenszelle - für Word optimiert
+        name_cell = name_title_table.cell(0, 0)
+        DocxUtils.add_grey_background(name_cell)
+        name_para = name_cell.paragraphs[0]
+        DocxUtils.add_word_optimized_spacing(name_para, space_before=0, space_after=2)
+        name_para.paragraph_format.left_indent = Pt(8)
+        name_run = name_para.add_run(data_copy.get('name', ''))
+        DocxUtils.add_word_font_optimization(name_run, 'Montserrat', 17, True, RGBColor(242, 93, 93))
+        
+        # Titelzelle - für Word optimiert
+        title_cell = name_title_table.cell(1, 0)
+        DocxUtils.add_grey_background(title_cell)
+        title_para = title_cell.paragraphs[0]
+        DocxUtils.add_word_optimized_spacing(title_para, space_after=10)
+        title_para.paragraph_format.left_indent = Pt(8)
+        title_parts = DocxUtils.clean_html_text(data_copy.get('title', ''))
+        for text, is_bold in title_parts:
+            if text.strip():
+                title_run = title_para.add_run(text)
+                DocxUtils.add_word_font_optimization(title_run, 'Montserrat', 13, True, RGBColor(34, 34, 34))
+
+        # Fähigkeiten-Abschnitt - für Word optimiert
+        if data_copy.get('skills'):
+            skills_para = left_cell.add_paragraph()
+            DocxUtils.add_word_optimized_spacing(skills_para, space_before=10, space_after=2)
+            skills_para.paragraph_format.left_indent = Pt(12)
+            skills_run = skills_para.add_run('SKILLS')
+            DocxUtils.add_word_font_optimization(skills_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
+            
+            for skill in data_copy['skills']:
+                skill_parts = DocxUtils.clean_html_text(skill)
+                skill_para = left_cell.add_paragraph()
+                DocxUtils.add_word_optimized_spacing(skill_para, space_after=3)
+                skill_para.paragraph_format.left_indent = Pt(28)
+                
+                # Rotes Dreieck mit Word-Optimierung hinzufügen
+                arrow_run = skill_para.add_run("▶ ")
+                DocxUtils.add_word_font_optimization(arrow_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
+                
+                # Fähigkeitentext mit Word-Optimierung hinzufügen
+                for text, is_bold in skill_parts:
+                    if text.strip():
+                        skill_run = skill_para.add_run(text)
+                        DocxUtils.add_word_font_optimization(skill_run, 'Montserrat', 10, is_bold, RGBColor(34, 34, 34))
+
+        # Bildungsabschnitt - für Word optimiert
+        if data_copy.get('education'):
+            edu_para = left_cell.add_paragraph()
+            DocxUtils.add_word_optimized_spacing(edu_para, space_before=10, space_after=2)
+            edu_para.paragraph_format.left_indent = Pt(12)
+            edu_run = edu_para.add_run('EDUCATION')
+            DocxUtils.add_word_font_optimization(edu_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
+            
+            for edu in data_copy['education']:
+                if isinstance(edu, dict):
+                    para = left_cell.add_paragraph()
+                    DocxUtils.add_word_optimized_spacing(para, space_after=3)
+                    para.paragraph_format.left_indent = Pt(28)
+                    
+                    # Rotes Dreieck hinzufügen
+                    arrow_run = para.add_run("▶ ")
+                    DocxUtils.add_word_font_optimization(arrow_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
+                    
+                    # Abschluss hinzufügen
+                    if edu.get('degree'):
+                        degree_parts = DocxUtils.clean_html_text(edu['degree'])
+                        for text, is_bold in degree_parts:
+                            if text.strip():
+                                degree_run = para.add_run(text)
+                                DocxUtils.add_word_font_optimization(degree_run, 'Montserrat', 10, is_bold, RGBColor(34, 34, 34))
+                    
+                    # Institut in neuer Zeile hinzufügen
+                    if edu.get('institution'):
+                        para.add_run('\n')
+                        inst_parts = DocxUtils.clean_html_text(edu['institution'])
+                        for text, is_bold in inst_parts:
+                            if text.strip():
+                                inst_run = para.add_run(text)
+                                DocxUtils.add_word_font_optimization(inst_run, 'Montserrat', 10, True, RGBColor(34, 34, 34))
+
+        # Zertifikationsabschnitt - für Word optimiert
+        if data_copy.get('certifications'):
+            cert_para = left_cell.add_paragraph()
+            DocxUtils.add_word_optimized_spacing(cert_para, space_before=10, space_after=2)
+            cert_para.paragraph_format.left_indent = Pt(12)
+            cert_run = cert_para.add_run('CERTIFICATIONS')
+            DocxUtils.add_word_font_optimization(cert_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
+            
+            for cert in data_copy['certifications']:
+                para = left_cell.add_paragraph()
+                DocxUtils.add_word_optimized_spacing(para, space_after=3)
+                para.paragraph_format.left_indent = Pt(28)
+                
+                # Rotes Dreieck hinzufügen
+                arrow_run = para.add_run("▶ ")
+                DocxUtils.add_word_font_optimization(arrow_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
+                
+                if isinstance(cert, dict):
+                    # Verfolgen, ob wir Inhalte hinzufügen
+                    has_content = False
+                    
+                    # Zertifikationstitel hinzufügen
+                    if cert.get('title'):
+                        title_parts = DocxUtils.clean_html_text(cert['title'])
+                        for text, is_bold in title_parts:
+                            if text.strip():
+                                title_run = para.add_run(text)
+                                DocxUtils.add_word_font_optimization(title_run, 'Montserrat', 10, is_bold, RGBColor(34, 34, 34))
+                                has_content = True
+                    
+                    # Aussteller hinzufügen (nur wenn wir Titel oder andere Inhalte haben)
+                    if cert.get('issuer') and has_content:
+                        para.add_run('\n')
+                        issuer_parts = DocxUtils.clean_html_text(cert['issuer'])
+                        for text, is_bold in issuer_parts:
+                            if text.strip():
+                                issuer_run = para.add_run(text)
+                                DocxUtils.add_word_font_optimization(issuer_run, 'Montserrat', 10, True, RGBColor(34, 34, 34))
+                    elif cert.get('issuer') and not has_content:
+                        # Wenn kein Titel, aber Aussteller vorhanden, Aussteller als Hauptinhalt hinzufügen
+                        issuer_parts = DocxUtils.clean_html_text(cert['issuer'])
+                        for text, is_bold in issuer_parts:
+                            if text.strip():
+                                issuer_run = para.add_run(text)
+                                DocxUtils.add_word_font_optimization(issuer_run, 'Montserrat', 10, True, RGBColor(34, 34, 34))
+                                has_content = True
+                    
+                    # Jahr hinzufügen (nur wenn wir andere Inhalte haben)
+                    if cert.get('year') and has_content:
+                        year_run = para.add_run(f"\n{cert['year']}")
+                        DocxUtils.add_word_font_optimization(year_run, 'Montserrat', 10, False, RGBColor(34, 34, 34))
+
+        # --- RECHTE SPALTE (Für Word optimiert) ---
+        # Polsterung für die rechte Spalte hinzufügen
+        right_cell_padding = right_cell.add_paragraph()
+        right_cell_padding.paragraph_format.left_indent = Pt(12)
+
+        # Zusammenfassungsabschnitt - für Word optimiert
+        if data_copy.get('summary'):
+            summary_title_para = right_cell.add_paragraph()
+            DocxUtils.add_word_optimized_spacing(summary_title_para, space_before=0, space_after=2)
+            summary_title_para.paragraph_format.left_indent = Pt(12)
+            summary_title_run = summary_title_para.add_run('SUMMARY')
+            DocxUtils.add_word_font_optimization(summary_title_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
+            
+            summary_para = right_cell.add_paragraph()
+            DocxUtils.add_word_optimized_spacing(summary_para, space_after=5)
+            summary_para.paragraph_format.left_indent = Pt(12)
+            summary_parts = DocxUtils.clean_html_text(data_copy['summary'])
+            for text, is_bold in summary_parts:
+                if text.strip():
+                    summary_run = summary_para.add_run(text)
+                    DocxUtils.add_word_font_optimization(summary_run, 'Montserrat', 10, is_bold, RGBColor(34, 34, 34))
+
+        # Projektabschnitt - für Word optimiert
+        if data_copy.get('projects'):
+            # Minimalen Abstand hinzufügen
+            spacing_para = right_cell.add_paragraph()
+            DocxUtils.add_word_optimized_spacing(spacing_para, space_after=3)
+            
+            # Abschnittstitel
+            section_para = right_cell.add_paragraph()
+            DocxUtils.add_word_optimized_spacing(section_para, space_after=2)
+            section_para.paragraph_format.left_indent = Pt(12)
+            section_run = section_para.add_run('KEY RESPONSIBILITIES:')
+            DocxUtils.add_word_font_optimization(section_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
+            
+            # Minimalen Abstand hinzufügen
+            spacing_para2 = right_cell.add_paragraph()
+            DocxUtils.add_word_optimized_spacing(spacing_para2, space_after=1)
+            
+            # Projekteinträge
+            for idx, project in enumerate(data_copy['projects']):
+                # Projekttitel
+                if project.get('title'):
+                    proj_title_para = right_cell.add_paragraph()
+                    DocxUtils.add_word_optimized_spacing(proj_title_para, space_before=6, space_after=2)
+                    proj_title_para.paragraph_format.left_indent = Pt(12)
+                    
+                    title_run = proj_title_para.add_run(f"Project {idx + 1}: ")
+                    DocxUtils.add_word_font_optimization(title_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
+                    
+                    title_parts = DocxUtils.clean_html_text(project['title'])
+                    for text, is_bold in title_parts:
+                        if text.strip():
+                            proj_run = proj_title_para.add_run(text)
+                            DocxUtils.add_word_font_optimization(proj_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
+                
+                # Projektbeschreibungs-Aufzählungszeichen
+                if project.get('description'):
+                    desc_text = project['description']
+                    if isinstance(desc_text, str):
+                        # Erweiterte Aufzählungszeichenaufteilung zur Handhabung von HTML-Listen, Zeilenumbrüchen und Aufzählungszeichen
+                        desc_text = desc_text.replace('</li>', '</li>\n').replace('•', '\n')
+                        # Aufteilung nach Punkten, Zeilenumbrüchen, <br> oder <li>.
+                        bullets = re.split(r'(?<=[.?!])\s+|\n|<br\s*/?>|<li>', desc_text)
+                        
+                        for bullet_html in bullets:
+                            bullet_html = bullet_html.strip()
+                            if not bullet_html:
+                                continue
+                            
+                            bullet_parts = DocxUtils.clean_html_text(bullet_html)
+                            if not any(part[0].strip() for part in bullet_parts):
+                                continue
+
+                            bullet_para = right_cell.add_paragraph()
+                            DocxUtils.add_word_optimized_spacing(bullet_para, space_after=3)
+                            bullet_para.paragraph_format.left_indent = Pt(28)
+                            
+                            # Rotes Dreieck hinzufügen
+                            arrow_run = bullet_para.add_run("▶ ")
+                            DocxUtils.add_word_font_optimization(arrow_run, 'Montserrat', 11, True, RGBColor(242, 93, 93))
+                            
+                            # Aufzählungszeichentext hinzufügen
+                            for text, is_bold in bullet_parts:
+                                if text.strip():
+                                    bullet_run = bullet_para.add_run(text)
+                                    DocxUtils.add_word_font_optimization(bullet_run, 'Montserrat', 10, is_bold, RGBColor(34, 34, 34))
+        
+        # --- FUSSZEILE (Kompatibles Design) ---
+        footer = doc.sections[0].footer
+        footer.is_linked_to_previous = False
+        
+        # Standard-Fußzeileninhalt löschen
+        for para in footer.paragraphs:
+            try:
+                p = para._element
+                p.getparent().remove(p)
+            except:
+                para.clear()  # Fallback-Methode
+            
+        # Fußzeilentabelle mit kompatiblem Design erstellen
+        footer_table = DocxUtils.create_compatible_footer_table(footer, 8.0)
+        if footer_table is not None:
+            footer_cell = footer_table.cell(0, 0)
+            
+            # Hintergrundfarbe der Zelle auf Markenorange setzen
+            DocxUtils.add_cell_background_compatible(footer_cell, 'F25D5D')
+            
+            # Fußzeilentext mit korrekter Formatierung hinzufügen
+            footer_para = footer_cell.paragraphs[0]
+            footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            DocxUtils.set_standard_spacing(footer_para, space_before_pt=6, space_after_pt=6)
+            
+            footer_run = footer_para.add_run("© www.shorthills.ai")
+            DocxUtils.apply_standard_font(footer_run, 'Montserrat', 10, False, RGBColor(255, 255, 255))
+        
+        # Optimierungen für PDF-Export anwenden und Spaltenbreiten sperren
+        DocxUtils.optimize_for_pdf_export(doc)
+        DocxUtils.lock_all_table_layouts(doc)
+        
+        # Dokument in BytesIO speichern
+        docx_file = io.BytesIO()
+        doc.save(docx_file)
+        docx_file.seek(0)
+        return docx_file
+
+    @staticmethod
+    def generate_multi_page_docx(data, keywords=None):
+        """
+        Generate a multi-page .docx resume with proper page breaks and section distribution.
+        This handles large amounts of content that don't fit on a single page.
+        """
+
+        def estimate_content_size(data):
+            """Estimate how much content we have to determine if multi-page is needed"""
+            size = 0
+            size += len(data.get('skills', [])) * 2  # Each skill takes ~2 units
+            size += len(data.get('education', [])) * 4  # Each education entry ~4 units
+            size += len(data.get('certifications', [])) * 3  # Each cert ~3 units
+            
+            # Projects can be large
+            for project in data.get('projects', []):
+                project_size = 5  # Base size for title
+                if project.get('description'):
+                    bullets = project['description'].split('\n') if isinstance(project['description'], str) else []
+                    project_size += len([b for b in bullets if b.strip()]) * 2
+                size += project_size
+            
+            return size
+
+        # Apply keyword bolding if keywords provided and clean NA values
+        data_copy = copy.deepcopy(data) if keywords else data
+        data_copy = DocxUtils.clean_na_values(data_copy)
+        
+        # Limit skills to prevent left column overflow (max 18 skills for DOCX)
+        if data_copy.get('skills') and len(data_copy['skills']) > 18:
+            data_copy['skills'] = data_copy['skills'][:18]
+        
+        # Limit certifications to prevent overflow (max 5 certifications)
+        if data_copy.get('certifications') and len(data_copy['certifications']) > 5:
+            data_copy['certifications'] = data_copy['certifications'][:5]
+        
+        # Estimate if we need multiple pages
+        content_size = estimate_content_size(data_copy)
+        needs_multiple_pages = content_size > 65  # Threshold for single page
+        
+        if not needs_multiple_pages:
+            # Use single page layout
+            return DocxUtils.generate_docx(data_copy, keywords)
+        
+        # For multi-page, create a modified single-page layout that flows naturally
+        # Word will handle page breaks automatically with proper styling
+        doc = docx.Document()
+        
+        # Set page margins with small values for compatibility
+        sections = doc.sections
+        for section in sections:
+            section.top_margin = Inches(0.2)
+            section.bottom_margin = Inches(0.2)
+            section.left_margin = Inches(0.2)
+            section.right_margin = Inches(0.2)
+
+            # Set header and footer distances for compatibility
+            section.header_distance = Inches(0.15)
+            section.footer_distance = Inches(0.15)
+
+        # Add robust page border for better compatibility
+        DocxUtils.add_robust_page_border(doc)
+        # Skip watermark as requested
+        # DocxUtils.add_background_watermark(doc)
+
+        # Header with logos (will appear on all pages)
+        header = doc.sections[0].header
+        
+        # Clear any default header content
+        for para in header.paragraphs:
+            para.clear()
+            
+        header_table = DocxUtils.create_compatible_table(header, rows=1, cols=3, width_inches=8.1)
+        header_table.columns[0].width = Inches(2.7)
+        header_table.columns[1].width = Inches(2.7)
+        header_table.columns[2].width = Inches(2.7)
+        
+        # Left logo
+        left_cell = header_table.cell(0, 0)
+        left_para = left_cell.paragraphs[0]
+        left_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        left_para.paragraph_format.space_before = Pt(8)
+        left_para.paragraph_format.space_after = Pt(4)
+        left_para.paragraph_format.left_indent = Pt(8)
+        try:
+            left_para.add_run().add_picture("templates/left_logo_small.png", height=Inches(0.5))
+        except Exception:
+            left_run = left_para.add_run("ShorthillsAI")
+            left_run.font.name = 'Montserrat'
+            left_run.font.size = Pt(12judge_color_rgb = RGBColor(242, 93, 93)
+            left_run.bold = True
+        
+        # Right logo
+        right_cell = header_table.cell(0, 2)
+        right_para = right_cell.paragraphs[0]
+        right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        right_para.paragraph_format.space_before = Pt(8)
+        right_para.paragraph_format.space_after = Pt(4)
+        right_para.paragraph_format.right_indent = Pt(8)
+        try:
+            right_para.add_run().add_picture("templates/right_logo_small.png", height=Inches(0.6))
+        except Exception:
+            right_run = right_para.add_run("Microsoft Partner")
+            right_run.font.name = 'Montserrat'
+            right_run.font.size = Pt(10)
+            right_run.font.color.rgb = RGBColor(102, 102, 102)
+
+        DocxUtils.remove_all_table_borders(header_table)
+
+        # Add small padding for content
+        content_padding = doc.add_paragraph()
+        content_padding.paragraph_format.left_indent = Pt(12)
+        content_padding.paragraph_format.space_after = Pt(6)
+
+        # Name and title (centered)
+        name_para = doc.add_paragraph()
+        name_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        name_para.paragraph_format.space_before = Pt(20)
+        name_para.paragraph_format.space_after = Pt(6)
+        name_run = name_para.add_run(data_copy.get('name', ''))
+        name_run.bold = True
+        name_run.font.size = Pt(24)
+        name_run.font.color.rgb = RGBColor(242, 93, 93)
+        name_run.font.name = 'Montserrat'
+        
+        if data_copy.get('title'):
+            title_para = doc.add_paragraph()
+            title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            title_para.paragraph_format.space_after = Pt(20)
+            title_parts = DocxUtils.clean_html_text(data_copy['title'])
+            for text, is_bold in title_parts:
+                if text.strip():
+                    title_run = title_para.add_run(text)
+                    title_run.font.size = Pt(16)
+                    title_run.font.name = 'Montserrat'
+                    title_run.font.color.rgb = RGBColor(34, 34, 34)
+                    title_run.bold = True
+
+        # Summary
+        if data_copy.get('summary'):
+            summary_title_para = doc.add_paragraph()
+            summary_title_para.paragraph_format.left_indent = Pt(12)
+            summary_title_para.paragraph_format.space_before = Pt(0)
+            summary_title_para.paragraph_format.space_after = Pt(4)
+            summary_title_run = summary_title_para.add_run('SUMMARY')
+            summary_title_run.bold = True
+            summary_title_run.font.size = Pt(13)
+            summary_title_run.font.color.rgb = RGBColor(242, 93, 93)
+            summary_title_run.font.name = 'Montserrat'
+            
+            summary_para = doc.add_paragraph()
+            summary_para.paragraph_format.left_indent = Pt(12)
+            summary_para.paragraph_format.space_after = Pt(18)
+            summary_parts = DocxUtils.clean_html_text(data_copy['summary'])
+            DocxUtils.add_formatted_text(summary_para, summary_parts, font_size=12)
+
+        # Projects
+        if data_copy.get('projects'):
+            projects_title_para = doc.add_paragraph()
+            projects_title_para.paragraph_format.left_indent = Pt(12)
+            projects_title_para.paragraph_format.space_after = Pt(4)
+            projects_title_run = projects_title_para.add_run('KEY RESPONSIBILITIES')
+            projects_title_run.bold = True
+            projects_title_run.font.size = Pt(13)
+            projects_title_run.font.color.rgb = RGBColor(242, 93, 93)
+            projects_title_run.font.name = 'Montserrat'
+            
+            for idx, project in enumerate(data_copy['projects']):
+                if project.get('title'):
+                    proj_title_para = doc.add_paragraph()
+                    proj_title_para.paragraph_format.left_indent = Pt(12)
+                    proj_title_para.paragraph_format.space_before = Pt(12)
+                    proj_title_para.paragraph_format.space_after = Pt(4)
+                    
+                    title_run = proj_title_para.add_run(f"Project {idx + 1}: ")
+                    title_run.bold = True
+                    title_run.font.size = Pt(13)
+                    title_run.font.color.rgb = RGBColor(242, 93, 93)
+                    title_run.font.name = 'Montserrat'
+                    
+                    title_parts = DocxUtils.clean_html_text(project['title'])
+                    for text, is_bold in title_parts:
+                        if text.strip():
+                            proj_run = proj_title_para.add_run(text)
+                            proj_run.bold = True
+                            proj_run.font.size = Pt(13)
+                            proj_run.font.color.rgb = RGBColor(242, 93, 93)
+                            proj_run.font.name = 'Montserrat'
+
+                if project.get('description'):
+                    desc_text = project['description']
+                    if isinstance(desc_text, str):
+                        # Enhanced bullet splitting to handle HTML lists, newlines, and bullet characters
+                        desc_text = desc_text.replace('</li>', '</li>\n').replace('•', '\n')
+                        # Split by full stops, newlines, <br>, or <li>.
+                        bullets = re.split(r'(?<=[.?!])\s+|\n|<br\s*/?>|<li>', desc_text)
+                        
+                        for bullet_html in bullets:
+                            bullet_html = bullet_html.strip()
+                            if not bullet_html:
+                                continue
+                            
+                            bullet_parts = DocxUtils.clean_html_text(bullet_html)
+
+                            if not any(part[0].strip() for part in bullet_parts):
+                                continue
+
+                            bullet_para = doc.add_paragraph()
+                            bullet_para.paragraph_format.left_indent = Pt(34)  # 12 + 22
+                            bullet_para.paragraph_format.space_after = Pt(6)
+                            
+                            # Add red triangle
+                            arrow_run = bullet_para.add_run("▶ ")
+                            arrow_run.font.name = 'Montserrat'
+                            arrow_run.font.size = Pt(13)
+                            arrow_run.font.color.rgb = RGBColor(242, 93, 93)
+                            arrow_run.bold = True
+                            
+                            # Add bullet text
+                            DocxUtils.add_formatted_text(bullet_para, bullet_parts, font_size=12)
+
+        # Skills
+        if data_copy.get('skills'):
+            skills_title_para = doc.add_paragraph()
+            skills_title_para.paragraph_format.left_indent = Pt(12)
+            skills_title_para.paragraph_format.space_before = Pt(18)
+            skills_title_para.paragraph_format.space_after = Pt(4)
+            skills_title_run = skills_title_para.add_run('SKILLS')
+            skills_title_run.bold = True
+            skills_title_run.font.size = Pt(13)
+            skills_title_run.font.color.rgb = RGBColor(242, 93, 93)
+            skills_title_run.font.name = 'Montserrat'
+            
+            for skill in data_copy['skills']:
+                skill_para = doc.add_paragraph()
+                skill_para.paragraph_format.left_indent = Pt(34)  # 12 + 22
+                skill_para.paragraph_format.space_after = Pt(6)
+                
+                # Add red triangle
+                arrow_run = skill_para.add_run("▶ ")
+                arrow_run.font.name = 'Montserrat'
+                arrow_run.font.size = Pt(13)
+                arrow_run.font.color.rgb = RGBColor(242, 93, 93)
+                arrow_run.bold = True
+                
+                # Add skill text
+                skill_parts = DocxUtils.clean_html_text(skill)
+                DocxUtils.add_formatted_text(skill_para, skill_parts, font_size=12)
+
+        # Education
+        if data_copy.get('education'):
+            edu_title_para = doc.add_paragraph()
+            edu_title_para.paragraph_format.left_indent = Pt(12)
+            edu_title_para.paragraph_format.space_before = Pt(18)
+            edu_title_para.paragraph_format.space_after = Pt(4)
+            edu_title_run = edu_title_para.add_run('EDUCATION')
+            edu_title_run.bold = True
+            edu_title_run.font.size = Pt(13)
+            edu_title_run.font.color.rgb = RGBColor(242, 93, 93)
+            edu_title_run.font.name = 'Montserrat'
+            
+            for edu in data_copy['education']:
+                if isinstance(edu, dict):
+                    para = doc.add_paragraph()
+                    para.paragraph_format.left_indent = Pt(34)  # 12 + 22
+                    para.paragraph_format.space_after = Pt(6)
+                
+                    arrow_run = para.add_run("▶ ")
+                    arrow_run.font.name = 'Montserrat'
+                    arrow_run.font.size = Pt(13)
+                    arrow_run.font.color.rgb = RGBColor(242, 93, 93)
+                    arrow_run.bold = True
+                    
+                    if edu.get('degree'):
+                        degree_parts = DocxUtils.clean_html_text(edu['degree'])
+                        DocxUtils.add_formatted_text(para, degree_parts, font_size=12)
+                    
+                    if edu.get('institution'):
+                        para.add_run('\n')
+                        inst_parts = DocxUtils.clean_html_text(edu['institution'])
+                        for text, is_bold in inst_parts:
+                            if text.strip():
+                                inst_run = para.add_run(text)
+                                inst_run.font.name = 'Montserrat'
+                                inst_run.font.size = Pt(12)
+                                inst_run.font.color.rgb = RGBColor(34, 34, 34)
+                                inst_run.bold = True
+                else:
+                    edu_para = doc.add_paragraph()
+                    edu_para.paragraph_format.left_indent = Pt(34)
+                    edu_para.paragraph_format.space_after = Pt(6)
+                    
+                    arrow_run = edu_para.add_run("▶ ")
+                    arrow_run.font.name = 'Montserrat'
+                    arrow_run.font.size = Pt(13)
+                    arrow_run.font.color.rgb = RGBColor(242, 93, 93)
+                    arrow_run.bold = True
+                    
+                    edu_parts = DocxUtils.clean_html_text(str(edu))
+                    DocxUtils.add_formatted_text(edu_para, edu_parts, font_size=12)
+
+        # Certifications
+        if data_copy.get('certifications'):
+            cert_title_para = doc.add_paragraph()
+            cert_title_para.paragraph_format.left_indent = Pt(12)
+            cert_title_para.paragraph_format.space_before = Pt(18)
+            cert_title_para.paragraph_format.space_after = Pt(4)
+            cert_title_run = cert_title_para.add_run('CERTIFICATIONS')
+            cert_title_run.bold = True
+            cert_title_run.font.size = Pt(13)
+            cert_title_run.font.color.rgb = RGBColor(242, 93, 93)
+            cert_title_run.font.name = 'Montserrat'
+            
+            for cert in data_copy['certifications']:
+                para = doc.add_paragraph()
+                para.paragraph_format.left_indent = Pt(34)  # 12 + 22
+                para.paragraph_format.space_after = Pt(6)
+                
+                arrow_run = para.add_run("▶ ")
+                arrow_run.font.name = 'Montserrat'
+                arrow_run.font.size = Pt(13)
+                arrow_run.font.color.rgb = RGBColor(242, 93, 93)
+                arrow_run.bold = True
+                
+                if isinstance(cert, dict):
+                    # Track if we have any content to add
+                    has_content = False
+                    
+                    if cert.get('title'):
+                        title_parts = DocxUtils.clean_html_text(cert['title'])
+                        DocxUtils.add_formatted_text(para, title_parts, font_size=12)
+                        has_content = True
+                    
+                    # Add issuer (only if we have title or other content)
+                    if cert.get('issuer') and has_content:
+                        para.add_run('\n')
+                        issuer_parts = DocxUtils.clean_html_text(cert['issuer'])
+                        for text, is_bold in issuer_parts:
+                            if text.strip():
+                                issuer_run = para.add_run(text)
+                                issuer_run.font.name = 'Montserrat'
+                                issuer_run.font.size = Pt(12)
+                                issuer_run.font.color.rgb = RGBColor(34, 34, 34)
+                                issuer_run.bold = True
+                    elif cert.get('issuer') and not has_content:
+                        # If no title but have issuer, add issuer as main content
+                        issuer_parts = DocxUtils.clean_html_text(cert['issuer'])
+                        for text, is_bold in issuer_parts:
+                            if text.strip():
+                                issuer_run = para.add_run(text)
+                                issuer_run.font.name = 'Montserrat'
+                                issuer_run.font.size = Pt(12)
+                                issuer_run.font.color.rgb = RGBColor(34, 34, 34)
+                                issuer_run.bold = True
+                                has_content = True
+                    
+                    # Add year (only if we have other content)
+                    if cert.get('year') and has_content:
+                        year_run = para.add_run(f"\n{cert['year']}")
+                        year_run.font.name = 'Montserrat'
+                        year_run.font.size = Pt(12)
+                        year_run.font.color.rgb = RGBColor(34, 34, 34)
+                else:
+                    cert_parts = DocxUtils.clean_html_text(str(cert))
+                    DocxUtils.add_formatted_text(para, cert_parts, font_size=12)
+
+        # Footer with compatible design
+        footer = doc.sections[0].footer
+        
+        # Clear any default footer content
+        for para in footer.paragraphs:
+            para.clear()
+            
+        # Create footer table for consistent background
+        footer_table = DocxUtils.create_compatible_footer_table(footer, 8.0)
+        if footer_table is not None:
+            footer_cell = footer_table.cell(0, 0)
+            DocxUtils.add_cell_background_compatible(footer_cell, 'F25D5D')
+            
+            footer_para = footer_cell.paragraphs[0]
+            footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            DocxUtils.set_standard_spacing(footer_para, space_before_pt=6, space_after_pt=6)
+            
+            footer_run = footer_para.add_run("© www.shorthills.ai")
+            DocxUtils.apply_standard_font(footer_run, 'Montserrat', 10, False, RGBColor(255, 255, 255))
+
+        # Save document
+        docx_file = io.BytesIO()
+        doc.save(docx_file)
+        docx_file.seek(0)
+        return docx_file

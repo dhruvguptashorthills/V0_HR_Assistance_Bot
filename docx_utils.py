@@ -748,7 +748,7 @@ class DocxUtils:
                             if not any(part[0].strip() for part in bullet_parts):
                                 continue
 
-                            bullet_para = right_cell.add_partograph()
+                            bullet_para = right_cell.add_paragraph()
                             DocxUtils.add_word_optimized_spacing(bullet_para, space_after=3)
                             bullet_para.paragraph_format.left_indent = Pt(28)
                             
